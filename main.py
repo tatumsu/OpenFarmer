@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
 from farmer import Farmer
 import logger
 from logger import log
@@ -6,6 +6,7 @@ import yaml
 import sys
 import utils
 from settings import load_user_param, user_param
+
 
 def run(config_file: str):
     with open(config_file, "r", encoding="utf8") as file:

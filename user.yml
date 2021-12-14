@@ -2,11 +2,11 @@ wax_account: uszym.wam
 # only http proxy like 127.0.0.1:10809
 proxy: null
 
-build: true
+build: false
 mining: true
-chicken: true
-plant: true
-cow: true
-mbs: true
+chicken: false
+plant: false
+cow: false
+mbs: false
 
 recover_energy: 500

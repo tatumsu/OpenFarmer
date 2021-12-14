@@ -25,7 +25,7 @@ class NFT:
 
 # 金、木、食物、能量
 @dataclass(init=False)
-class Resoure:
+class Resource:
     energy: Decimal = None
     max_energy: Decimal = None
     gold: Decimal = None

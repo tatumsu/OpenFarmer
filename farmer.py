@@ -20,7 +20,7 @@ import utils
 from utils import plat
 from settings import user_param
 import res
-from res import Building, Resoure, Animal, Asset, Farming, Crop, NFT, Axe, Tool, Token, Chicken, FishingRod, MBS
+from res import Building, Resource, Animal, Asset, Farming, Crop, NFT, Axe, Tool, Token, Chicken, FishingRod, MBS
 from datetime import datetime, timedelta
 from settings import cfg
 import os
@@ -87,7 +87,7 @@ class Farmer:
         # 本轮扫描中作物操作失败个数
         self.count_error_claim = 0
         # 本轮开始时的资源数量
-        self.resoure: Resoure = None
+        self.resource: Resource = None
         self.token: Token = None
 
     def close(self):
@@ -262,7 +262,7 @@ class Farmer:
         res.init_mbs_config(resp["rows"])
 
     # 获取游戏中的三种资源数量和能量值
-    def get_resource(self) -> Resoure:
+    def get_resource(self) -> Resource:
         post_data = self.table_row_template()
         post_data["table"] = "accounts"
         post_data["index_position"] = 1
@@ -270,7 +270,7 @@ class Farmer:
         resp = self.http.post(self.url_table_row, json=post_data)
         self.log.debug("get_table_rows:{0}".format(resp.text))
         resp = resp.json()
-        resource = Resoure()
+        resource = Resource()
         resource.energy = Decimal(resp["rows"][0]["energy"])
         resource.max_energy = Decimal(resp["rows"][0]["max_energy"])
         balances: List[str] = resp["rows"][0]["balances"]
@@ -546,6 +546,18 @@ class Farmer:
         self.inject_waxjs()
         self.log.info("begin transact: {0}".format(transaction))
         try:
+            # [2021-12-10 11:51:36,855][ERROR][13280][.jcjg.wam]: local variable 'result' referenced before assignment
+            # Traceback (most recent call last):
+            #   File "D:\farmer\OpenFarmer-main\OpenFarmer-main\farmer.py", line 549, in wax_transact
+            #     success, result = self.driver.execute_script("return window.wax_transact(arguments[0]);", transaction)
+            # File "C:\Users\admin\AppData\Local\Programs\Python\Python310\lib\site-packages\selenium\webdriver\remote\webdriver.py", line 878, in execute_script
+            #     return self.execute(command, {
+            # File "C:\Users\admin\AppData\Local\Programs\Python\Python310\lib\site-packages\selenium\webdriver\remote\webdriver.py", line 424, in execute
+            #     self.error_handler.check_response(response)
+            # File "C:\Users\admin\AppData\Local\Programs\Python\Python310\lib\site-packages\selenium\webdriver\remote\errorhandler.py", line 247, in check_response
+            #     raise exception_class(message, screen, stacktrace)
+            # selenium.common.exceptions.TimeoutException: Message: script timeout
+            #   (Session info: chrome=96.0.4664.45)
             success, result = self.driver.execute_script("return window.wax_transact(arguments[0]);", transaction)
             if success:
                 self.log.info("transact ok, transaction_id: [{0}]".format(result["transaction_id"]))
@@ -696,7 +708,8 @@ class Farmer:
     def repair_tool(self, tool: Tool):
         self.log.info(f"正在修理工具: {tool.show()}")
         consume_gold = (tool.durability - tool.current_durability) // 5
-        if Decimal(consume_gold) > self.resoure.gold:
+        if Decimal(consume_gold) > self.resource.gold:
+            self.notify_not_enough_gold()
             raise FarmerException("没有足够的金币修理工具，请补充金币，稍后程序自动重试")
         transaction = {
             "actions": [{
@@ -718,11 +731,6 @@ class Farmer:
     # 恢复能量
     def recover_energy(self, count: Decimal):
         self.log.info("正在恢复能量: 【{0}】点 ".format(count))
-        need_food = count // Decimal(5)
-        if need_food > self.resoure.food:
-            self.log.error(f"食物不足，仅剩【{self.resoure.food}】，兑换能量【{count}】点需要【{need_food}】个食物，请手工处理")
-            raise FarmerException("没有足够的食物，请补充食物，稍后程序自动重试")
-
         transaction = {
             "actions": [{
                 "account": "farmersworld",
@@ -742,16 +750,22 @@ class Farmer:
     # 消耗能量 （操作前模拟计算）
     def consume_energy(self, real_consume: Decimal, fake_consume: Decimal = Decimal(0)):
         consume = real_consume + fake_consume
-        if self.resoure.energy - consume > 0:
-            self.resoure.energy -= real_consume
+        if self.resource.energy - consume > 0:
+            self.resource.energy -= real_consume
             return True
         else:
             self.log.info("能量不足")
-            recover = min(user_param.recover_energy, self.resoure.max_energy - self.resoure.energy)
-            recover = (recover // Decimal(5)) * Decimal(5)
-            self.recover_energy(recover)
-            self.resoure.energy += recover
-            self.resoure.energy -= real_consume
+            recover_amount = min(Decimal(user_param.recover_energy),
+                                 self.resource.max_energy - self.resource.energy,
+                                 self.resource.food * 5)
+            if recover_amount < 1:
+                self.log.error(f"没有剩余的食物可用于，请手工处理")
+                self.notify_no_more_food()
+                raise FarmerException("没有足够的食物，请补充食物，稍后程序自动重试")
+
+            self.recover_energy(recover_amount)
+            self.resource.energy += recover_amount
+            self.resource.energy -= real_consume
             return True
 
     # 消耗耐久度 （操作前模拟计算）
@@ -762,24 +776,31 @@ class Farmer:
             self.log.info("工具耐久不足")
             self.repair_tool(tool)
 
+    def notify_no_more_food(self):
+        # TODO: ADD NOTIFY LOGIC HERE
+        pass
 
-    def scan_mbs(self):
+    def notify_not_enough_gold(self):
+        # TODO: ADD NOTIFY LOGIC HERE
+        pass
+
+    def scan_member_cards(self):
         self.log.info("检查会员卡")
-        mbs = self.get_mbs()
-        for item in mbs:
+        cards = self.get_member_cards()
+        for item in cards:
             self.log.info(item.show(True))
 
-        mbs = self.filter_operable(mbs)
-        if not mbs:
+        cards = self.filter_operable(cards)
+        if not cards:
             self.log.info("没有可操作的会员卡")
             return True
         self.log.info("可操作的会员卡:")
-        for item in mbs:
+        for item in cards:
             self.log.info(item.show(True))
-        self.claim_mbs(mbs)
+        self.claim_member_cards(cards)
         return True
 
-    def get_mbs(self) -> List[MBS]:
+    def get_member_cards(self) -> List[MBS]:
         post_data = self.table_row_template()
         post_data["table"] = "mbs"
         post_data["index_position"] = 2
@@ -797,7 +818,7 @@ class Farmer:
                 self.log.warning("尚未支持的会员卡类型:{0}".format(item))
         return mbs
 
-    def claim_mbs(self, tools: List[MBS]):
+    def claim_member_cards(self, tools: List[MBS]):
         for item in tools:
             self.log.info("正在点击会员卡: {0}".format(item.show(True)))
             transaction = {
@@ -821,7 +842,7 @@ class Farmer:
     def scan_resource(self):
         r = self.get_resource()
         self.log.info(f"金币【{r.gold}】 木头【{r.wood}】 食物【{r.food}】 能量【{r.energy}/{r.max_energy}】")
-        self.resoure = r
+        self.resource = r
         time.sleep(cfg.req_interval)
         self.token = self.get_fw_balance()
         self.log.info(f"FWG【{self.token.fwg}】 FWW【{self.token.fww}】 FWF【{self.token.fwf}】")
@@ -841,7 +862,7 @@ class Farmer:
             time.sleep(cfg.req_interval)
 
             if user_param.mbs:
-                self.scan_mbs()
+                self.scan_member_cards()
                 time.sleep(cfg.req_interval)
             if user_param.build:
                 self.scan_buildings()
@@ -883,7 +904,7 @@ class Farmer:
                 return Status.Stop
             self.count_error_transact += 1
             self.log.error("合约调用异常【{0}】次".format(self.count_error_transact))
-            if self.count_error_transact >= e.max_retry_times and e.max_retry_times != -1:
+            if self.count_error_transact >= e.max_retry_times != -1:
                 self.log.error("合约连续调用异常")
                 return Status.Stop
             self.next_scan_time = datetime.now() + cfg.min_scan_interval
@@ -916,7 +937,6 @@ class Farmer:
                     self.log.info("程序已停止，请检查日志后手动重启程序")
                     return 1
             time.sleep(1)
-
 
 
 def test():
